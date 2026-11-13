@@ -22,6 +22,10 @@ const POINT_RADIUS = 6;
 const ICON_SIZE = 24;
 const MAX_LABEL_CHARS = 80;
 const MAX_POPUP_CHARS = 500;
+const MAX_SCHEMA_CHARS = 32;
+// Each stacking run is one pane, and each run of paths one viewport-sized
+// SVG. Features past this many runs are drawn in the last one.
+export const MAX_STACKING_RUNS = 20;
 const DASH_PATTERN = '6 6';
 
 // A hex color, a named color, or rgb()/rgba()/hsl()/hsla() with numbers
@@ -179,6 +183,15 @@ export function collectShapes(
   return { items, skipped };
 }
 
+/**
+ * True for a feature with something to show in a popup. A feature with
+ * neither `label` nor `popup` is drawn without taking taps, so they reach
+ * the alert or map underneath.
+ */
+export function hasPopupText(item: ShapeItem): boolean {
+  return item.style.label !== '' || item.style.popup !== '';
+}
+
 /** True for an item drawn as an icon marker rather than an SVG path. */
 function drawnAsIcon(item: ShapeItem): boolean {
   const type = item.geometry.type;
@@ -210,6 +223,19 @@ export function stackingRuns(items: readonly ShapeItem[]): ShapeItem[][] {
     previous = item;
   }
   return runs;
+}
+
+/**
+ * Keeps at most `maxRuns` stacking runs by moving every item past the
+ * limit into the last run. Inside that run the icons sit above the paths
+ * whatever their ranks. `merged` counts the items that were moved.
+ */
+export function capRuns(runs: readonly ShapeItem[][], maxRuns = MAX_STACKING_RUNS): { runs: ShapeItem[][]; merged: number } {
+  if (runs.length <= maxRuns) return { runs: [...runs], merged: 0 };
+  const kept = runs.slice(0, maxRuns - 1);
+  const rest = runs.slice(maxRuns - 1).flat();
+  kept.push(rest);
+  return { runs: kept, merged: rest.length - runs[maxRuns - 1].length };
 }
 
 /**
@@ -246,10 +272,22 @@ export function shapePopupContent(item: ShapeItem): HTMLElement {
   const source = document.createElement('div');
   source.style.opacity = '0.7';
   source.style.fontSize = 'smaller';
-  const schema = typeof item.schema === 'number' || typeof item.schema === 'string' ? ` (schema ${item.schema})` : '';
+  const schemaText = typeof item.schema === 'number' ? String(item.schema) : shortText(item.schema, MAX_SCHEMA_CHARS);
+  const schema = schemaText ? ` (schema ${schemaText})` : '';
   source.textContent = `${item.entityId}${schema}`;
   box.appendChild(source);
   return box;
+}
+
+/**
+ * Whether a path is drawn with a fill. Leaflet's SVG paths take taps
+ * wherever a fill is painted, even a transparent one, so a polygon with
+ * `fill_opacity: 0` is drawn as an outline and takes taps on its line only.
+ * Lines are never filled, whatever `fill` says.
+ */
+export function isFilled(geometry: GeoJSON.Geometry, style: ShapeStyle): boolean {
+  if (geometry.type === 'LineString' || geometry.type === 'MultiLineString') return false;
+  return style.fillOpacity > 0;
 }
 
 function iconFor(item: ShapeItem): L.DivIcon {
@@ -366,9 +404,11 @@ export class ShapesLayer {
       this._redrawAfterPopup = true;
       return;
     }
+    // Recorded before the draw, so a draw that fails is tried and warned
+    // once per entity update, not again on every hass update.
+    this._drawnKey = key;
     try {
       this._draw(ids);
-      this._drawnKey = key;
     } catch (err) {
       // Never let a bad feature escape into the card's Lit lifecycle.
       console.warn('Shapes: draw failed', err);
@@ -384,23 +424,29 @@ export class ShapesLayer {
     if (skipped > 0) {
       console.warn(`Shapes: skipped ${skipped} feature(s) that are not valid GeoJSON Features in ${ids.join(', ')}`);
     }
-    const interactive = this._getConfig().static_map !== true;
-    stackingRuns(items).forEach((run, index) => {
+    const { runs, merged } = capRuns(stackingRuns(items));
+    if (merged > 0) {
+      console.warn(`Shapes: ${merged} feature(s) past ${MAX_STACKING_RUNS} stacking layers drawn in the top one; icons there sit above paths`);
+    }
+    const mapTakesTaps = this._getConfig().static_map !== true;
+    runs.forEach((run, index) => {
       const pane = this._runPane(index);
       // An SVG renderer of its own, not the shared canvas renderer: a
       // second canvas above the alert polygons would take every click
       // meant for them (see shared-canvas-renderer.ts). The panes have
       // pointer-events none, so only the shapes' own paths and icons take
       // clicks and the rest fall through to the alerts underneath. A run
-      // of icons has no paths and needs none.
+      // of icons only has no paths and needs none.
       let renderer: L.SVG | undefined;
-      if (!drawnAsIcon(run[0])) {
+      if (run.some((item) => !drawnAsIcon(item))) {
         renderer = L.svg({ pane });
         this._renderers.push(renderer);
       }
       for (const item of run) {
+        // A static map cannot move, so no popup that would pan it. A shape
+        // with nothing to say lets taps through to what is under it.
+        const interactive = mapTakesTaps && hasPopupText(item);
         for (const layer of this._layersFor(item, pane, renderer, interactive)) {
-          // A static map cannot move, so no popup that would pan it.
           if (interactive) layer.bindPopup(() => shapePopupContent(item), { autoPanPadding: [12, 12] });
           group.addLayer(layer);
         }
@@ -423,8 +469,7 @@ export class ShapesLayer {
       dashArray: style.dash ? DASH_PATTERN : undefined,
       fillColor: style.fill,
       fillOpacity: style.fillOpacity,
-      // Lines are never filled, whatever `fill` says.
-      fill: geometry.type !== 'LineString' && geometry.type !== 'MultiLineString',
+      fill: isFilled(geometry, style),
     };
     // The options go to every path L.geoJSON builds (pane and renderer
     // included); `style` alone would not move them into the shapes pane.
@@ -432,7 +477,7 @@ export class ShapesLayer {
   }
 
   private _pointLayer(item: ShapeItem, at: L.LatLng, pane: string, renderer: L.SVG | undefined, interactive: boolean): L.Layer {
-    if (item.style.icon) {
+    if (drawnAsIcon(item)) {
       return L.marker(at, { icon: iconFor(item), pane, interactive, keyboard: false });
     }
     return L.circleMarker(at, {

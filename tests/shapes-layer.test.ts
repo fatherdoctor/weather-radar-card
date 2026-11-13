@@ -6,8 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as L from 'leaflet';
 import type { HomeAssistant } from 'custom-card-helpers';
 import {
-  ShapesLayer, collectShapes, isDrawableFeature, isDrawableGeometry, shapeEntityIds, shapePopupContent, shapeStyle,
-  shapesDecisionKey, stackingRuns,
+  MAX_STACKING_RUNS, ShapesLayer, capRuns, collectShapes, hasPopupText, isDrawableFeature, isDrawableGeometry, isFilled,
+  shapeEntityIds, shapePopupContent, shapeStyle, shapesDecisionKey, stackingRuns,
 } from '../src/shapes-layer';
 import { overlayConfigured } from '../src/layer-toggles';
 import { SHAPES_PANE, Z_LIGHTNING, Z_SHAPES } from '../src/const';
@@ -23,7 +23,7 @@ const line: GeoJSON.Feature = {
 const polygon: GeoJSON.Feature = {
   type: 'Feature',
   geometry: { type: 'Polygon', coordinates: [[[-97, 32], [-96, 32], [-96, 33], [-97, 32]]] },
-  properties: { fill: 'rgba(255, 0, 0, 0.5)', fill_opacity: 0.3, rank: 1 },
+  properties: { fill: 'rgba(255, 0, 0, 0.5)', fill_opacity: 0.3, rank: 1, label: 'Cone' },
 };
 const point: GeoJSON.Feature = {
   type: 'Feature',
@@ -192,6 +192,37 @@ describe('stackingRuns', () => {
   it('gives nothing for nothing', () => {
     expect(stackingRuns([])).toEqual([]);
   });
+
+  it('caps the runs: everything past the limit joins the last run and is counted', () => {
+    const items = Array.from({ length: 10 }, (_, i) => item(i % 2 ? 'Point' : 'LineString', i, i % 2 ? 'mdi:a' : null));
+    const runs = stackingRuns(items);
+    expect(runs).toHaveLength(10);
+    const capped = capRuns(runs, 4);
+    expect(capped.runs).toHaveLength(4);
+    expect(capped.runs.slice(0, 3)).toEqual(runs.slice(0, 3));
+    expect(capped.runs[3]).toEqual(items.slice(3));
+    // Items 4..9 moved into run 3, which already held item 3.
+    expect(capped.merged).toBe(6);
+    expect(capRuns(runs, 10)).toEqual({ runs, merged: 0 });
+  });
+});
+
+describe('fill and taps', () => {
+  const polygonWith = (properties: Record<string, unknown>) => collectShapes(hassWith([{ ...polygon, properties }]), ['sensor.geo']).items[0];
+
+  it('fills a polygon only when its fill_opacity is above 0, and never a line', () => {
+    expect(isFilled(polygon.geometry, shapeStyle({ fill_opacity: 0.3 }))).toBe(true);
+    expect(isFilled(polygon.geometry, shapeStyle({}))).toBe(true);
+    expect(isFilled(polygon.geometry, shapeStyle({ fill_opacity: 0 }))).toBe(false);
+    expect(isFilled(line.geometry, shapeStyle({ fill_opacity: 1 }))).toBe(false);
+  });
+
+  it('has popup text only with a label or popup', () => {
+    expect(hasPopupText(polygonWith({}))).toBe(false);
+    expect(hasPopupText(polygonWith({ label: '  ' }))).toBe(false);
+    expect(hasPopupText(polygonWith({ label: 'Cone' }))).toBe(true);
+    expect(hasPopupText(polygonWith({ popup: 'Text' }))).toBe(true);
+  });
 });
 
 describe('config', () => {
@@ -224,6 +255,17 @@ describe('shapePopupContent', () => {
     expect(el.querySelector('b')).toBeNull();
     expect(el.textContent).toContain('<b>Cell</b>');
     expect(el.textContent).toContain('sensor.geo (schema 1)');
+  });
+
+  it('cuts a long schema and writes markup in it as text', () => {
+    const item = {
+      ...collectShapes(hassWith([point]), ['sensor.geo']).items[0],
+      schema: `<img src=x onerror=alert(1)>${'z'.repeat(5000)}`,
+    };
+    const el = shapePopupContent(item);
+    expect(el.querySelector('img')).toBeNull();
+    expect(el.textContent).toContain('(schema <img src=x');
+    expect(el.textContent!.length).toBeLessThan(100);
   });
 });
 
@@ -367,6 +409,100 @@ describe('ShapesLayer on a map', () => {
       expect((l.options as { interactive?: boolean }).interactive).toBe(false);
       expect(l.getPopup()).toBeUndefined();
     }
+    layer.clear();
+  });
+
+  it('draws a polygon with fill_opacity 0 as an outline that takes taps on its line only', () => {
+    const layer = new ShapesLayer(map, () => config, hassWith([{ ...polygon, properties: { label: 'Ring', fill_opacity: 0 } }]));
+    layer.start();
+    const shape = layersIn(map).find((l) => l instanceof L.Polygon) as L.Polygon;
+    expect(shape.options.fill).toBe(false);
+    expect(shape.options.interactive).toBe(true);
+    // SVG paths take pointer events where a fill is painted; none is.
+    expect(shape.getElement()!.getAttribute('fill')).toBe('none');
+    layer.clear();
+  });
+
+  it('draws a feature with neither label nor popup so it takes no taps and has no popup', () => {
+    const quiet = { ...polygon, properties: { fill_opacity: 0.3 } };
+    const quietPoint = { ...point, properties: { icon: 'mdi:home' } };
+    const quietDot = { type: 'Feature', geometry: { type: 'Point', coordinates: [-96.7, 32.7] }, properties: {} };
+    const layer = new ShapesLayer(map, () => config, hassWith([quiet, quietPoint, quietDot, line]));
+    layer.start();
+    const drawn = layersIn(map);
+    expect(drawn).toHaveLength(4);
+    for (const l of drawn) {
+      // The line has a label; the other three have nothing to say.
+      const talks = l instanceof L.Polyline && !(l instanceof L.Polygon);
+      expect((l.options as { interactive?: boolean }).interactive).toBe(talks);
+    }
+    const shape = drawn.find((l) => l instanceof L.Polygon) as L.Polygon;
+    expect(shape.getElement()!.classList.contains('leaflet-interactive')).toBe(false);
+    shape.fire('click', { latlng: L.latLng(32.4, -96.6) }, true);
+    expect(el.querySelector('.leaflet-popup')).toBeNull();
+    layer.clear();
+  });
+
+  it('tries a draw that fails once per entity update, not on every hass update', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const draw = vi.spyOn(ShapesLayer.prototype as unknown as { _draw: () => void }, '_draw')
+      .mockImplementation(() => { throw new Error('boom'); });
+    const layer = new ShapesLayer(map, () => config, hassWith([line]));
+    layer.start();
+    layer.updateHass(hassWith([line]));
+    layer.updateHass(hassWith([line]));
+    expect(draw).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    layer.updateHass(hassWith([line], '2026-11-12T20:01:00Z'));
+    expect(draw).toHaveBeenCalledTimes(2);
+    layer.clear();
+  });
+
+  it('never makes more stacking panes than the limit, and warns about the features it merged', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const many = Array.from({ length: 60 }, (_, i) => ({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [-96.8 + i / 100, 32.5] },
+      properties: i % 2 ? { icon: 'mdi:circle', rank: i, label: 'i' } : { rank: i, label: 'p' },
+    }));
+    const layer = new ShapesLayer(map, () => config, hassWith(many));
+    layer.start();
+    const panes = map.getPane(SHAPES_PANE)!.children;
+    expect(panes).toHaveLength(MAX_STACKING_RUNS);
+    expect(layersIn(map)).toHaveLength(60);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain(`${60 - MAX_STACKING_RUNS} feature(s) past ${MAX_STACKING_RUNS}`);
+    // The merged run mixes icons and paths, so it has an SVG of its own.
+    expect(panes[MAX_STACKING_RUNS - 1].querySelector('svg')).not.toBeNull();
+    // Every path has the layer's own SVG renderer, never the map's default
+    // (which can be a canvas that would take every tap in the pane).
+    const paths = layersIn(map).filter((l) => l instanceof L.Path) as L.Path[];
+    expect(paths.length).toBeGreaterThan(0);
+    for (const path of paths) expect(path.options.renderer).toBeInstanceOf(L.SVG);
+    layer.clear();
+  });
+
+  it('starts, clears and starts again: nothing is left after a clear, and the pane is visible', () => {
+    const layer = new ShapesLayer(map, () => config, hassWith([line, polygon]));
+    layer.start();
+    const pane = map.getPane(SHAPES_PANE)!;
+    map.fire('zoomstart');
+    expect(pane.style.display).toBe('none');
+    layer.clear();
+    expect(pane.style.display).toBe('');
+    expect(layersIn(map)).toHaveLength(0);
+    expect(pane.querySelectorAll('path')).toHaveLength(0);
+    expect(pane.querySelectorAll('svg')).toHaveLength(0);
+    let groups = 0;
+    map.eachLayer((l) => { if (l instanceof L.FeatureGroup) groups += 1; });
+    expect(groups).toBe(0);
+    // The zoom handler went with the clear.
+    map.fire('zoomstart');
+    expect(pane.style.display).toBe('');
+    // Same hass, same key: the new start draws anyway.
+    layer.start();
+    expect(layersIn(map).some((l) => l instanceof L.Polygon)).toBe(true);
+    expect(layersIn(map).some((l) => l instanceof L.Polyline && !(l instanceof L.Polygon))).toBe(true);
     layer.clear();
   });
 
