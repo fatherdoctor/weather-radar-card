@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as L from 'leaflet';
 import type { HomeAssistant } from 'custom-card-helpers';
 import {
-  ShapesLayer, collectShapes, isDrawableGeometry, shapeEntityIds, shapePopupContent, shapeStyle, shapesDecisionKey,
+  ShapesLayer, collectShapes, isDrawableFeature, isDrawableGeometry, shapeEntityIds, shapePopupContent, shapeStyle,
+  shapesDecisionKey, stackingRuns,
 } from '../src/shapes-layer';
 import { overlayConfigured } from '../src/layer-toggles';
 import { SHAPES_PANE, Z_LIGHTNING, Z_SHAPES } from '../src/const';
@@ -68,6 +69,24 @@ describe('isDrawableGeometry', () => {
   });
 });
 
+describe('isDrawableFeature', () => {
+  it('accepts a Feature with drawable geometry', () => {
+    expect(isDrawableFeature(line)).toBe(true);
+    expect(isDrawableFeature({ type: 'Feature', geometry: point.geometry })).toBe(true);
+  });
+
+  it('refuses an entry that is not a GeoJSON Feature, whatever its geometry', () => {
+    expect(isDrawableFeature({ type: 'not-a-feature', geometry: point.geometry })).toBe(false);
+    expect(isDrawableFeature({ geometry: point.geometry })).toBe(false);
+    expect(isDrawableFeature({ type: 'feature', geometry: point.geometry })).toBe(false);
+    expect(isDrawableFeature(point.geometry)).toBe(false);
+    expect(isDrawableFeature({ type: 'FeatureCollection', features: [point] })).toBe(false);
+    expect(isDrawableFeature([point])).toBe(false);
+    expect(isDrawableFeature(null)).toBe(false);
+    expect(isDrawableFeature({ type: 'Feature', geometry: null })).toBe(false);
+  });
+});
+
 describe('shapeStyle', () => {
   it('reads the allowlisted keys', () => {
     const s = shapeStyle({
@@ -122,6 +141,18 @@ describe('collectShapes', () => {
     expect(items[0].schema).toBe(1);
   });
 
+  it('skips and counts entries whose envelope is not a Feature, and still draws the valid ones', () => {
+    const hass = hassWith([
+      { type: 'not-a-feature', geometry: point.geometry },
+      { geometry: point.geometry },
+      point.geometry,
+      line,
+    ]);
+    const { items, skipped } = collectShapes(hass, ['sensor.geo']);
+    expect(items.map((i) => i.geometry.type)).toEqual(['LineString']);
+    expect(skipped).toBe(3);
+  });
+
   it('adds nothing for a missing entity or one without features, and no warning count', () => {
     expect(collectShapes(hassWith(undefined), ['sensor.geo'])).toEqual({ items: [], skipped: 0 });
     expect(collectShapes(hassWith([line]), ['sensor.absent'])).toEqual({ items: [], skipped: 0 });
@@ -130,6 +161,36 @@ describe('collectShapes', () => {
 
   it('counts a features attribute that is not a list as one skip', () => {
     expect(collectShapes(hassWith({ type: 'FeatureCollection' }), ['sensor.geo']).skipped).toBe(1);
+  });
+});
+
+describe('stackingRuns', () => {
+  const item = (type: 'Point' | 'LineString', rank: number, icon: string | null = null) => ({
+    entityId: 'sensor.geo',
+    schema: 1,
+    geometry: type === 'Point'
+      ? { type: 'Point', coordinates: [0, 0] }
+      : { type: 'LineString', coordinates: [[0, 0], [1, 1]] },
+    style: { ...shapeStyle({ rank }), icon },
+  }) as Parameters<typeof stackingRuns>[0][number];
+
+  it('keeps consecutive paths, plain points included, in one run', () => {
+    const items = [item('LineString', 0), item('Point', 1), item('LineString', 2)];
+    expect(stackingRuns(items)).toEqual([items]);
+  });
+
+  it('starts a new run wherever paths and icons alternate', () => {
+    const items = [item('LineString', 0), item('Point', 1, 'mdi:home'), item('LineString', 2)];
+    expect(stackingRuns(items)).toEqual([[items[0]], [items[1]], [items[2]]]);
+  });
+
+  it('keeps icons of one rank together and splits icons of different ranks', () => {
+    const items = [item('Point', 1, 'mdi:a'), item('Point', 1, 'mdi:b'), item('Point', 2, 'mdi:c')];
+    expect(stackingRuns(items)).toEqual([[items[0], items[1]], [items[2]]]);
+  });
+
+  it('gives nothing for nothing', () => {
+    expect(stackingRuns([])).toEqual([]);
   });
 });
 
@@ -191,7 +252,8 @@ describe('ShapesLayer on a map', () => {
     m.eachLayer((l) => {
       // Leaf shapes only: not the SVG renderer or the L.geoJSON wrapper, which carry the pane option too.
       if (l instanceof L.Renderer || l instanceof L.LayerGroup) return;
-      if ((l.options as { pane?: string }).pane === SHAPES_PANE) out.push(l);
+      // Each stacking run has its own pane inside the shapes pane, named after it.
+      if ((l.options as { pane?: string }).pane?.startsWith(`${SHAPES_PANE}-`)) out.push(l);
     });
     return out;
   };
@@ -219,6 +281,42 @@ describe('ShapesLayer on a map', () => {
     expect(String(warn.mock.calls[0][0])).toContain('skipped 1 feature');
     layer.clear();
     expect(layersIn(map)).toHaveLength(0);
+  });
+
+  it('stacks a higher-ranked polygon over a lower-ranked icon, and the reverse', () => {
+    // The outside review's reproduction (SWU.pr F1): before the fix the icon
+    // marker always sat above the SVG, whatever the ranks said.
+    const icon = (rank: number) => ({
+      type: 'Feature', geometry: { type: 'Point', coordinates: [-96.8, 32.5] }, properties: { icon: 'mdi:circle', rank },
+    });
+    const square = (rank: number) => ({
+      type: 'Feature',
+      geometry: { type: 'Polygon', coordinates: [[[-97, 32.3], [-96.6, 32.3], [-96.6, 32.7], [-97, 32.7], [-97, 32.3]]] },
+      properties: { fill: 'blue', fill_opacity: 1, rank },
+    });
+    const zOf = (l: L.Layer) => {
+      const pane = map.getPane((l.options as { pane: string }).pane)!;
+      // Both run panes sit directly inside the shapes pane, so their z-indexes compare.
+      expect(pane.parentElement).toBe(map.getPane(SHAPES_PANE));
+      expect(pane.style.pointerEvents).toBe('none');
+      return Number(pane.style.zIndex);
+    };
+    const layer = new ShapesLayer(map, () => config, hassWith([icon(0), square(10)]));
+    layer.start();
+    let marker = layersIn(map).find((l) => l instanceof L.Marker)!;
+    let polygonLayer = layersIn(map).find((l) => l instanceof L.Polygon)!;
+    expect(zOf(polygonLayer)).toBeGreaterThan(zOf(marker));
+    // The polygon's SVG is in its own pane, not the icon's.
+    expect(map.getPane((marker.options as { pane: string }).pane)!.querySelector('svg')).toBeNull();
+
+    layer.updateHass(hassWith([icon(10), square(0)], '2026-11-12T20:01:00Z'));
+    marker = layersIn(map).find((l) => l instanceof L.Marker)!;
+    polygonLayer = layersIn(map).find((l) => l instanceof L.Polygon)!;
+    expect(zOf(marker)).toBeGreaterThan(zOf(polygonLayer));
+    // The redraw removed the first drawing's SVG: only the polygon's is left.
+    expect(map.getPane(SHAPES_PANE)!.querySelectorAll('svg')).toHaveLength(1);
+    layer.clear();
+    expect(map.getPane(SHAPES_PANE)!.querySelectorAll('svg')).toHaveLength(0);
   });
 
   it('styles a dashed line and never fills it', () => {

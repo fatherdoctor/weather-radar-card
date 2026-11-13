@@ -136,9 +136,20 @@ export function isDrawableGeometry(geometry: unknown): geometry is GeoJSON.Geome
 }
 
 /**
+ * True for a GeoJSON Feature object (RFC 7946 section 3.2) whose geometry
+ * the layer can draw. A bare geometry, or an object of another type that
+ * happens to carry a `geometry`, is not a Feature.
+ */
+export function isDrawableFeature(feature: unknown): feature is GeoJSON.Feature {
+  if (!feature || typeof feature !== 'object' || Array.isArray(feature)) return false;
+  const { type, geometry } = feature as { type?: unknown; geometry?: unknown };
+  return type === 'Feature' && isDrawableGeometry(geometry);
+}
+
+/**
  * Reads every configured entity's `features` attribute into drawable
  * items, lowest `rank` first (equal ranks keep their order). `skipped`
- * counts the features that were not valid GeoJSON. A missing entity, or
+ * counts the entries that were not valid GeoJSON Features. A missing entity, or
  * one with no `features` attribute (for example while unavailable), adds
  * nothing and is not an error.
  */
@@ -156,18 +167,49 @@ export function collectShapes(
       continue;
     }
     for (const feature of attributes.features as unknown[]) {
-      const geometry = (feature as { geometry?: unknown } | null)?.geometry;
-      if (!isDrawableGeometry(geometry)) {
+      if (!isDrawableFeature(feature)) {
         skipped += 1;
         continue;
       }
-      const properties = (feature as { properties?: unknown }).properties;
-      items.push({ entityId, schema: attributes.schema, geometry, style: shapeStyle(properties) });
+      items.push({ entityId, schema: attributes.schema, geometry: feature.geometry, style: shapeStyle(feature.properties) });
     }
   }
   // Array.prototype.sort is stable, so equal ranks keep the entity's order.
   items.sort((a, b) => a.style.rank - b.style.rank);
   return { items, skipped };
+}
+
+/** True for an item drawn as an icon marker rather than an SVG path. */
+function drawnAsIcon(item: ShapeItem): boolean {
+  const type = item.geometry.type;
+  return item.style.icon !== null && (type === 'Point' || type === 'MultiPoint');
+}
+
+/**
+ * Splits rank-ordered items into stacking runs, lowest first. Paths are
+ * drawn in an SVG element and icons as marker elements, and the browser
+ * stacks those two kinds by z-index, not by the order they were added, so
+ * one rank order across both needs a stacking layer per run (one pane
+ * each, see ShapesLayer._runPane). A run is either consecutive paths, which
+ * share one SVG and stack in the order they were added, or consecutive
+ * icons of the same rank, which Leaflet stacks by latitude like every
+ * other marker.
+ */
+export function stackingRuns(items: readonly ShapeItem[]): ShapeItem[][] {
+  const runs: ShapeItem[][] = [];
+  let previous: ShapeItem | null = null;
+  for (const item of items) {
+    const sameRun = previous !== null
+      && drawnAsIcon(previous) === drawnAsIcon(item)
+      && (!drawnAsIcon(item) || previous.style.rank === item.style.rank);
+    if (sameRun) {
+      runs[runs.length - 1].push(item);
+    } else {
+      runs.push([item]);
+    }
+    previous = item;
+  }
+  return runs;
 }
 
 /**
@@ -229,7 +271,8 @@ export class ShapesLayer {
   private _getConfig: () => WeatherRadarCardConfig;
   private _hass: HomeAssistant | undefined;
   private _group: L.FeatureGroup | null = null;
-  private _renderer: L.SVG | null = null;
+  // One SVG renderer per run of paths in the current drawing.
+  private _renderers: L.SVG[] = [];
   private _disposeHide: (() => void) | null = null;
   // The decision key of what is drawn now; null before the first draw.
   private _drawnKey: string | null = null;
@@ -244,12 +287,6 @@ export class ShapesLayer {
 
   start(): void {
     this._ensurePane();
-    // An SVG renderer of its own in the shapes pane, not the shared canvas
-    // renderer: a second canvas above the alert polygons would take every
-    // click meant for them (see shared-canvas-renderer.ts). The pane has
-    // pointer-events none, so only the shapes' own paths and icons take
-    // clicks and the rest fall through to the alerts underneath.
-    this._renderer = L.svg({ pane: SHAPES_PANE });
     this._group = L.featureGroup().addTo(this._map);
     this._group.on('popupclose', this._onPopupClose);
     this._disposeHide = hideElementWhileZooming(this._map, () => this._map.getPane(SHAPES_PANE));
@@ -263,10 +300,7 @@ export class ShapesLayer {
       this._group.remove();
       this._group = null;
     }
-    if (this._renderer) {
-      this._renderer.remove();
-      this._renderer = null;
-    }
+    this._removeRenderers();
     this._disposeHide?.();
     this._disposeHide = null;
     this._drawnKey = null;
@@ -283,6 +317,26 @@ export class ShapesLayer {
     const pane = this._map.createPane(SHAPES_PANE);
     pane.style.zIndex = String(Z_SHAPES);
     pane.style.pointerEvents = 'none';
+  }
+
+  /**
+   * The pane for stacking run `index`, created inside the shapes pane on
+   * first use and kept for later drawings. A later run sits above an
+   * earlier one. Like its parent, it takes no clicks itself.
+   */
+  private _runPane(index: number): string {
+    const name = `${SHAPES_PANE}-${index}`;
+    if (!this._map.getPane(name)) {
+      const pane = this._map.createPane(name, this._map.getPane(SHAPES_PANE));
+      pane.style.zIndex = String(index + 1);
+      pane.style.pointerEvents = 'none';
+    }
+    return name;
+  }
+
+  private _removeRenderers(): void {
+    for (const renderer of this._renderers) renderer.remove();
+    this._renderers = [];
   }
 
   private _onPopupClose = (): void => {
@@ -325,29 +379,44 @@ export class ShapesLayer {
     const group = this._group;
     if (!group) return;
     group.clearLayers();
+    this._removeRenderers();
     const { items, skipped } = collectShapes(this._hass, ids);
     if (skipped > 0) {
-      console.warn(`Shapes: skipped ${skipped} feature(s) that are not valid GeoJSON in ${ids.join(', ')}`);
+      console.warn(`Shapes: skipped ${skipped} feature(s) that are not valid GeoJSON Features in ${ids.join(', ')}`);
     }
     const interactive = this._getConfig().static_map !== true;
-    for (const item of items) {
-      for (const layer of this._layersFor(item, interactive)) {
-        // A static map cannot move, so no popup that would pan it.
-        if (interactive) layer.bindPopup(() => shapePopupContent(item), { autoPanPadding: [12, 12] });
-        group.addLayer(layer);
+    stackingRuns(items).forEach((run, index) => {
+      const pane = this._runPane(index);
+      // An SVG renderer of its own, not the shared canvas renderer: a
+      // second canvas above the alert polygons would take every click
+      // meant for them (see shared-canvas-renderer.ts). The panes have
+      // pointer-events none, so only the shapes' own paths and icons take
+      // clicks and the rest fall through to the alerts underneath. A run
+      // of icons has no paths and needs none.
+      let renderer: L.SVG | undefined;
+      if (!drawnAsIcon(run[0])) {
+        renderer = L.svg({ pane });
+        this._renderers.push(renderer);
       }
-    }
+      for (const item of run) {
+        for (const layer of this._layersFor(item, pane, renderer, interactive)) {
+          // A static map cannot move, so no popup that would pan it.
+          if (interactive) layer.bindPopup(() => shapePopupContent(item), { autoPanPadding: [12, 12] });
+          group.addLayer(layer);
+        }
+      }
+    });
   }
 
-  private _layersFor(item: ShapeItem, interactive: boolean): L.Layer[] {
+  private _layersFor(item: ShapeItem, pane: string, renderer: L.SVG | undefined, interactive: boolean): L.Layer[] {
     const { geometry, style } = item;
     if (geometry.type === 'Point' || geometry.type === 'MultiPoint') {
       const points = geometry.type === 'Point' ? [geometry.coordinates] : geometry.coordinates;
-      return points.map(([lon, lat]) => this._pointLayer(item, L.latLng(lat, lon), interactive));
+      return points.map(([lon, lat]) => this._pointLayer(item, L.latLng(lat, lon), pane, renderer, interactive));
     }
     const pathOptions: L.PathOptions = {
-      renderer: this._renderer ?? undefined,
-      pane: SHAPES_PANE,
+      renderer,
+      pane,
       interactive,
       color: style.stroke,
       weight: style.weight,
@@ -362,13 +431,13 @@ export class ShapesLayer {
     return [L.geoJSON(geometry, pathOptions)];
   }
 
-  private _pointLayer(item: ShapeItem, at: L.LatLng, interactive: boolean): L.Layer {
+  private _pointLayer(item: ShapeItem, at: L.LatLng, pane: string, renderer: L.SVG | undefined, interactive: boolean): L.Layer {
     if (item.style.icon) {
-      return L.marker(at, { icon: iconFor(item), pane: SHAPES_PANE, interactive, keyboard: false });
+      return L.marker(at, { icon: iconFor(item), pane, interactive, keyboard: false });
     }
     return L.circleMarker(at, {
-      renderer: this._renderer ?? undefined,
-      pane: SHAPES_PANE,
+      renderer,
+      pane,
       interactive,
       radius: POINT_RADIUS,
       color: item.style.stroke,

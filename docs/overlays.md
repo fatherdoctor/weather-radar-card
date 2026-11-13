@@ -123,7 +123,7 @@ shape_entities:
   - sensor.storm_geometry
 ```
 
-Coordinates are WGS84 `[longitude, latitude]`, as GeoJSON requires. The layer draws `Point`, `MultiPoint`, `LineString`, `MultiLineString`, `Polygon` and `MultiPolygon` geometry; a polygon's rings must be closed. A feature it cannot draw (a `GeometryCollection`, a coordinate out of range, a ring that is not closed) is skipped, and the browser console gets one warning per update with the number skipped. An entity that is missing or has no `features` attribute draws nothing and is not an error.
+Coordinates are WGS84 `[longitude, latitude]`, as GeoJSON requires. The layer draws `Point`, `MultiPoint`, `LineString`, `MultiLineString`, `Polygon` and `MultiPolygon` geometry; a polygon's rings must be closed. Each entry must be a GeoJSON Feature (`"type": "Feature"`). An entry it cannot draw (one that is not a Feature, a `GeometryCollection`, a coordinate out of range, a ring that is not closed) is skipped, and the browser console gets one warning per update with the number skipped. An entity that is missing or has no `features` attribute draws nothing and is not an error.
 
 The shapes sit above the NWS alert polygons and below lightning, place names and your own markers. A tap on a shape opens a popup with its `label`, its `popup` text and the entity it came from. With `static_map: true` the shapes take no taps and open no popups. With `show_layer_toggles: true` the bar gets a **Shapes** button.
 
@@ -141,7 +141,7 @@ Each feature's `properties` style it. Only these keys are read; any other proper
 | `label`        | none           | A short title for the popup, up to 80 characters.                                                    |
 | `popup`        | none           | Popup text, up to 500 characters.                                                                    |
 | `icon`         | none           | For points: an `mdi:` icon, colored with `stroke`. Without one a point is a small circle.            |
-| `rank`         | `0`            | Draw order: lower ranks are drawn first, so higher ranks sit on top.                                 |
+| `rank`         | `0`            | Draw order: lower ranks are drawn first, so higher ranks sit on top, lines, polygons and icons alike. Icons of equal rank stack like other map markers. |
 
 An entity's other attributes stay out of the popup, except `schema` (a number or a string), which is shown after the entity id to help when the data's format changes.
 
