@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Shapes from an entity (`shape_entities`).** The card draws GeoJSON features that another integration publishes on an entity's `features` attribute: lines, filled polygons and points, such as a storm's track and cone or an evacuation zone. Each feature's `properties` choose its color, line width, dash, icon, draw order and popup text, from a fixed list of keys; nothing is executed. The layer fetches nothing and redraws when the entity updates. It sits above the NWS alert polygons and below lightning and your markers, and `show_layer_toggles` gives it a Shapes button. See [Shapes from an entity](docs/overlays.md#shapes-from-an-entity).
+- **Shapes from an entity (`shape_entities`).** The card draws GeoJSON features that another integration publishes on an entity's `features` attribute: lines, filled polygons and points, such as a storm's track and cone or an evacuation zone. Each feature's `properties` choose its color, line width, dash, icon, draw order and popup text, from a fixed list of keys; nothing is executed. The layer fetches nothing and redraws when the entity updates. It sits above the NWS alert polygons and below lightning and your markers, and `show_layer_toggles` gives it a Shapes button. A feature with no `label` or `popup` takes no taps, and a polygon with `fill_opacity: 0` takes taps on its line only, so alerts under them stay reachable. See [Shapes from an entity](docs/overlays.md#shapes-from-an-entity).
 
 ## [4.0.0] - 2026-11-03
 

@@ -127,6 +127,10 @@ Coordinates are WGS84 `[longitude, latitude]`, as GeoJSON requires. The layer dr
 
 The shapes sit above the NWS alert polygons and below lightning, place names and your own markers. A tap on a shape opens a popup with its `label`, its `popup` text and the entity it came from. With `static_map: true` the shapes take no taps and open no popups. With `show_layer_toggles: true` the bar gets a **Shapes** button.
 
+A shape with a `label` or `popup` takes the taps on what it draws: its line, and for a filled polygon its whole area, so an NWS alert under that area does not open its popup there. A data owner lets taps through in two ways. A polygon with `fill_opacity: 0` is drawn as an outline and takes taps on its line only. A feature with neither `label` nor `popup` takes no taps at all, so a tap reaches the alert or map underneath. Turning the shapes off with the **Shapes** button also uncovers the alerts.
+
+Each change between lines or polygons and icons in the draw order starts a new stacking layer. The card keeps at most 20; features past that are drawn in the top layer, where icons sit above lines and polygons whatever their `rank`, and the console gets one warning per update with the number of features drawn so.
+
 ### Feature properties
 
 Each feature's `properties` style it. Only these keys are read; any other property is ignored, and a value of the wrong type or out of range gets the default. Nothing is executed or templated, and text is shown as plain text.
@@ -135,7 +139,7 @@ Each feature's `properties` style it. Only these keys are read; any other proper
 |----------------|----------------|-----------------------------------------------------------------------------------------------------|
 | `stroke`       | `#3388ff`      | Line color. A hex color, a color name, or `rgb()`, `rgba()`, `hsl()`, `hsla()`.                      |
 | `fill`         | the `stroke`   | Fill color for polygons and points, in the same forms.                                               |
-| `fill_opacity` | `0.2`          | 0 to 1. Points without an icon are filled at least 0.6.                                              |
+| `fill_opacity` | `0.2`          | 0 to 1. At 0 a polygon is an outline and takes taps on its line only. Points without an icon are filled at least 0.6. |
 | `weight`       | `2`            | Line width in pixels, 0 to 20.                                                                       |
 | `dash`         | `false`        | `true` draws a dashed line.                                                                          |
 | `label`        | none           | A short title for the popup, up to 80 characters.                                                    |
@@ -143,7 +147,7 @@ Each feature's `properties` style it. Only these keys are read; any other proper
 | `icon`         | none           | For points: an `mdi:` icon, colored with `stroke`. Without one a point is a small circle.            |
 | `rank`         | `0`            | Draw order: lower ranks are drawn first, so higher ranks sit on top, lines, polygons and icons alike. Icons of equal rank stack like other map markers. |
 
-An entity's other attributes stay out of the popup, except `schema` (a number or a string), which is shown after the entity id to help when the data's format changes.
+An entity's other attributes stay out of the popup, except `schema` (a number, or a string of up to 32 characters), which is shown after the entity id to help when the data's format changes.
 
 ## Wind
 
