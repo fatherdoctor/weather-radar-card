@@ -4,12 +4,14 @@ import { WeatherRadarCardConfig } from './types';
 import { ViewerState } from './viewer-state';
 import { isBlitzortungLoaded } from './lightning-helpers';
 import { localize } from './localize/localize';
+import { shapeEntityIds } from './shapes-layer';
 
-export type OverlayKey = 'alerts' | 'wind' | 'wildfires' | 'lightning';
+export type OverlayKey = 'alerts' | 'shapes' | 'wind' | 'wildfires' | 'lightning';
 
 // Left to right in the toggle bar.
 const OVERLAYS: { key: OverlayKey; icon: string }[] = [
   { key: 'alerts', icon: 'mdi:alert' },
+  { key: 'shapes', icon: 'mdi:shape-outline' },
   { key: 'wind', icon: 'mdi:weather-windy' },
   { key: 'wildfires', icon: 'mdi:fire' },
   { key: 'lightning', icon: 'mdi:flash' },
@@ -20,7 +22,8 @@ export const OVERLAY_KEYS: OverlayKey[] = OVERLAYS.map((o) => o.key);
 /**
  * Whether the config turns an overlay on. Only these get a toggle: the
  * dashboard's author decides what's available, the viewer what's showing.
- * Lightning also needs the Blitzortung integration, its data source.
+ * Lightning also needs the Blitzortung integration, its data source;
+ * shapes need at least one entity in `shape_entities`.
  */
 export function overlayConfigured(
   key: OverlayKey,
@@ -29,6 +32,7 @@ export function overlayConfigured(
 ): boolean {
   switch (key) {
     case 'alerts': return cfg.show_alerts === true;
+    case 'shapes': return shapeEntityIds(cfg).length > 0;
     case 'wind': return cfg.dwd_wind === 'barbs' || cfg.dwd_wind === 'arrows' || cfg.dwd_wind_flow === true;
     case 'wildfires': return cfg.show_wildfires === true;
     case 'lightning': return cfg.show_lightning === true && isBlitzortungLoaded(hass);

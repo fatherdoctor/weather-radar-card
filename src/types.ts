@@ -296,6 +296,11 @@ export interface WeatherRadarCardConfig extends LovelaceCardConfig {
   lightning_pulse?: boolean;
   /** YAML-only escape hatch for the inline-SVG icon dimension. Default 14 px reads on a busy storm without cluttering. */
   lightning_icon_size?: number;
+  /**
+   * Entities whose `features` attribute holds GeoJSON features to draw
+   * (the Shapes overlay, src/shapes-layer.ts). Unset or empty = off.
+   */
+  shape_entities?: string[];
   // NWS watches & warnings overlay (US-only — see docs/nws-alerts-feature-design.md)
   show_alerts?: boolean;
   alerts_categories?: string[];        // category keys; default: all except 'marine'

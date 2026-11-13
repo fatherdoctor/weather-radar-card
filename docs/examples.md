@@ -153,6 +153,33 @@ alerts_categories:
   - flood
 ```
 
+## Shapes from an integration's entity: a storm's path, its cone and the closest point
+
+The integration publishes the features on `sensor.storm_geometry` (`attributes.features`); the card only draws them. Three features as they would appear in that attribute:
+
+```yaml
+type: 'custom:weather-radar-card'
+data_source: NOAA
+show_alerts: true
+show_layer_toggles: true
+shape_entities:
+  - sensor.storm_geometry
+```
+
+```json
+[
+  { "type": "Feature",
+    "geometry": { "type": "Polygon", "coordinates": [[[-97.30, 32.70], [-96.70, 32.95], [-96.75, 32.80], [-97.30, 32.70]]] },
+    "properties": { "fill": "#ff9800", "stroke": "#ff9800", "fill_opacity": 0.15, "weight": 1, "rank": 1, "label": "Possible path, next 45 min" } },
+  { "type": "Feature",
+    "geometry": { "type": "LineString", "coordinates": [[-97.30, 32.70], [-96.72, 32.87]] },
+    "properties": { "stroke": "#ff9800", "dash": true, "weight": 3, "rank": 2, "label": "Heading ENE at 35 mph" } },
+  { "type": "Feature",
+    "geometry": { "type": "Point", "coordinates": [-96.80, 32.85] },
+    "properties": { "icon": "mdi:close-circle", "stroke": "#d32f2f", "rank": 5, "label": "Closest 0.8 mi, 9:41 PM", "popup": "Radar indicated. Heading ENE at 35 mph." } }
+]
+```
+
 ## FAA VFR Sectional chart with live radar overlay
 
 A custom tile source doesn't have to be a conventional basemap — aeronautical charts work too. Lowering `radar_opacity` keeps the sectional's airspace rings, MOAs, VOR roses and elevations legible under the radar composite.

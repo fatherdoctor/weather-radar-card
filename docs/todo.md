@@ -88,6 +88,11 @@ preserving pinch-to-zoom, so mobile users can scroll past the card.
 
 ### Open
 
+- **Shapes: an editor field for `shape_entities`.** The Shapes layer
+  (`src/shapes-layer.ts`) is YAML-only in its first version. An entity
+  picker (multiple, any domain) in the Hazard Overlays subpage would
+  let editor users turn it on. Small; trigger: a user asks for it.
+
 - **Open-Meteo as an alternate wind source for global coverage.**
   The wind overlay landing in 3.6 (PR #133) is DWD-only — Germany +
   immediate neighbours via the ICON-D2 model. To extend the feature

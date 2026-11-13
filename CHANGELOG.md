@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Shapes from an entity (`shape_entities`).** The card draws GeoJSON features that another integration publishes on an entity's `features` attribute: lines, filled polygons and points, such as a storm's track and cone or an evacuation zone. Each feature's `properties` choose its color, line width, dash, icon, draw order and popup text, from a fixed list of keys; nothing is executed. The layer fetches nothing and redraws when the entity updates. It sits above the NWS alert polygons and below lightning and your markers, and `show_layer_toggles` gives it a Shapes button. See [Shapes from an entity](docs/overlays.md#shapes-from-an-entity).
+
 ## [4.0.0] - 2026-11-03
 
 > **4.0 release.** 4.0.0-rc4 with the fix below. 4.0 adds Home Assistant's vector map under the radar (`map_style: MapTilesVector`), `vector_style`, `theme_mode`, Satellite labels above the radar, view presets and layer toggles. It needs Home Assistant 2025.3 or later. The sections from 4.0.0-alpha1 to 4.0.0-rc4 below list all changes from 3.13.0. [Upgrading to 4.0](docs/upgrading-to-4.0.md) lists the breaking changes.
