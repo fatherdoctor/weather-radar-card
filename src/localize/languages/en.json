@@ -25,6 +25,7 @@
     "preset_clear": "Clear preset",
     "layers": {
       "alerts": "NWS alerts",
+      "shapes": "Shapes",
       "wind": "Wind",
       "wildfires": "Wildfires",
       "lightning": "Lightning"

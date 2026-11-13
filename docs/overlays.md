@@ -1,12 +1,12 @@
 # Hazard & Layer Overlays
 
-Optional overlays that stack on top of the radar. Two are US-only (Wildfires, NWS Alerts); those and Lightning carry strong life-safety disclaimers. Lightning (from the Blitzortung integration) and Wind are global.
+Optional overlays that stack on top of the radar. Two are US-only (Wildfires, NWS Alerts); those and Lightning carry strong life-safety disclaimers. Lightning (from the Blitzortung integration) and Wind are global. Shapes draws GeoJSON that another integration publishes on an entity.
 
 For non-US instances, the card surfaces a banner reminding the user that the data is US-only when either of the US-specific overlays is enabled with `hass.config.country !== 'US'`.
 
 ## Turning overlays on and off
 
-`show_layer_toggles: true` adds a row of buttons to the map's top-right corner, one for each overlay the card has turned on: NWS alerts, wind (arrows or barbs and streamlines together), wildfires and lightning. A tap hides or shows that overlay; a hidden overlay stops fetching until it's shown again. The buttons only offer what the config enables, so a viewer can't turn on an overlay the dashboard leaves off.
+`show_layer_toggles: true` adds a row of buttons to the map's top-right corner, one for each overlay the card has turned on: NWS alerts, shapes, wind (arrows or barbs and streamlines together), wildfires and lightning. A tap hides or shows that overlay; a hidden overlay stops fetching until it's shown again. The buttons only offer what the config enables, so a viewer can't turn on an overlay the dashboard leaves off.
 
 Choices last until the page reloads. With `viewer_layer_control: true` they're saved for each user and follow them across browsers and devices, as the playback speed does.
 
@@ -20,7 +20,7 @@ dwd_wind: arrows
 
 ## While the map moves
 
-The overlays leave the map during a zoom gesture and come back once the map has been still for a second: the alert and wildfire outlines, the fire icons and wind barbs, and the lightning strikes. Wildfires and lightning redraw at that moment, not at every step of a pinch. The NWS alerts layer does nothing at all while the map moves (no redraw, no zone shape fetched or decoded), and it draws zone outlines at half a pixel of detail for the current zoom. Leaflet scales a canvas with a CSS transform on every touch move and animates every icon on the snap-back, which crashed Safari on an iPhone whenever one of these overlays was on.
+The overlays leave the map during a zoom gesture and come back once the map has been still for a second: the alert and wildfire outlines, the fire icons and wind barbs, the shapes, and the lightning strikes. Wildfires and lightning redraw at that moment, not at every step of a pinch. The NWS alerts layer does nothing at all while the map moves (no redraw, no zone shape fetched or decoded), and it draws zone outlines at half a pixel of detail for the current zoom. Leaflet scales a canvas with a CSS transform on every touch move and animates every icon on the snap-back, which crashed Safari on an iPhone whenever one of these overlays was on.
 
 ## Wildfires
 
@@ -113,6 +113,41 @@ The toggle in the editor's Hazard Overlays subpage is greyed out when the Blitzo
 
 > [!WARNING]
 > Blitzortung is a community-run, free, best-effort lightning detection network. Coverage and accuracy vary regionally. **Not for life-safety decisions** — use NOAA Weather Radio, official storm warnings, or your local emergency channels for those.
+
+## Shapes from an entity
+
+`shape_entities` lists entities whose `features` attribute holds a list of GeoJSON features (as in a FeatureCollection's `features`). The card draws them on the map: lines, filled polygons and points. It is for integrations that have their own geometry, such as storm tracks and cones, river reaches or evacuation zones. The card fetches nothing for this layer; it redraws when one of the entities updates (its `last_updated` changes).
+
+```yaml
+shape_entities:
+  - sensor.storm_geometry
+```
+
+Coordinates are WGS84 `[longitude, latitude]`, as GeoJSON requires. The layer draws `Point`, `MultiPoint`, `LineString`, `MultiLineString`, `Polygon` and `MultiPolygon` geometry; a polygon's rings must be closed. Each entry must be a GeoJSON Feature (`"type": "Feature"`). An entry it cannot draw (one that is not a Feature, a `GeometryCollection`, a coordinate out of range, a ring that is not closed) is skipped, and the browser console gets one warning per update with the number skipped. An entity that is missing or has no `features` attribute draws nothing and is not an error.
+
+The shapes sit above the NWS alert polygons and below lightning, place names and your own markers. A tap on a shape opens a popup with its `label`, its `popup` text and the entity it came from. With `static_map: true` the shapes take no taps and open no popups. With `show_layer_toggles: true` the bar gets a **Shapes** button.
+
+A shape with a `label` or `popup` takes the taps on what it draws: its line, and for a filled polygon its whole area, so an NWS alert under that area does not open its popup there. A data owner lets taps through in two ways. A polygon with `fill_opacity: 0` is drawn as an outline and takes taps on its line only. A feature with neither `label` nor `popup` takes no taps at all, so a tap reaches the alert or map underneath. Turning the shapes off with the **Shapes** button also uncovers the alerts.
+
+Each change between lines or polygons and icons in the draw order starts a new stacking layer. The card keeps at most 20; features past that are drawn in the top layer, where icons sit above lines and polygons whatever their `rank`, and the console gets one warning per update with the number of features drawn so.
+
+### Feature properties
+
+Each feature's `properties` style it. Only these keys are read; any other property is ignored, and a value of the wrong type or out of range gets the default. Nothing is executed or templated, and text is shown as plain text.
+
+| Property       | Default        | Description                                                                                         |
+|----------------|----------------|-----------------------------------------------------------------------------------------------------|
+| `stroke`       | `#3388ff`      | Line color. A hex color, a color name, or `rgb()`, `rgba()`, `hsl()`, `hsla()`.                      |
+| `fill`         | the `stroke`   | Fill color for polygons and points, in the same forms.                                               |
+| `fill_opacity` | `0.2`          | 0 to 1. At 0 a polygon is an outline and takes taps on its line only. Points without an icon are filled at least 0.6. |
+| `weight`       | `2`            | Line width in pixels, 0 to 20.                                                                       |
+| `dash`         | `false`        | `true` draws a dashed line.                                                                          |
+| `label`        | none           | A short title for the popup, up to 80 characters.                                                    |
+| `popup`        | none           | Popup text, up to 500 characters.                                                                    |
+| `icon`         | none           | For points: an `mdi:` icon, colored with `stroke`. Without one a point is a small circle.            |
+| `rank`         | `0`            | Draw order: lower ranks are drawn first, so higher ranks sit on top, lines, polygons and icons alike. Icons of equal rank stack like other map markers. |
+
+An entity's other attributes stay out of the popup, except `schema` (a number, or a string of up to 32 characters), which is shown after the entity id to help when the data's format changes.
 
 ## Wind
 
